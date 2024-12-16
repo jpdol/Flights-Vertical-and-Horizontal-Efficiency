@@ -1,0 +1,7 @@
+.quarto
+rosm.cache
+.Rhistory
+*.html
+*.Rproj
+*.Rproj*
+TrajectoriesEfficiency_files/

@@ -1,0 +1,352 @@
+---
+title: "TrajectoriesEfficiency"
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(sf)
+library(ggplot2)
+library(leaflet)
+library(gridExtra)
+library(units)
+```
+
+
+## Data Presentation
+
+```{r data_input}
+# import data
+df <- read_csv("./data/rota3_SBCT-SBSP.csv")
+```
+
+
+
+
+```{r}
+flt_ids <- unique(df$id_icao)
+
+# Criar um data frame vazio para armazenar as trajetórias
+trajectories <- data.frame(id = character(), geometry = st_sfc(), stringsAsFactors = FALSE)
+
+for (id in flt_ids) {
+  # Criar um objeto sf a partir dos pontos do identificador atual
+  points_sf <- st_as_sf(df %>% filter(id_icao == id), coords = c("lon", "lat"), crs = 4326)
+  
+  # Criar uma geometria LINESTRING (trajetória) a partir dos pontos
+  trajectory <- points_sf %>%
+    st_combine() %>%   # Combina os pontos em uma única geometria
+    st_cast("LINESTRING") # Converte para LINESTRING
+  
+  # Adicionar ao data frame de trajetórias
+  trajectories <- rbind(
+    trajectories,
+    data.frame(id = id, geometry = st_sfc(trajectory), stringsAsFactors = FALSE)
+  )
+}
+
+# Converter para um objeto sf para manipulação espacial
+trajectories <- st_as_sf(trajectories, crs = 4326)
+```
+
+### Trajectory on map
+
+```{r}
+# origem SBCT
+o_lat <- -25.53166667
+o_lon <- -49.17611111
+
+# destino SBSP
+d_lat <- -23.62611111
+d_lon <- -46.65638889
+
+c_40_radio_m <- 40 *  1852
+c_100_radio_m <- 100 *  1852
+
+map <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%  # Mapa de fundo estilo claro
+  addPolylines(data = trajectories, 
+               weight = 2, 
+               color = ~colorFactor(palette = "Set1", domain = id)(id)) %>% # Atribui uma cor para cada 'id'
+  addCircles(lng = o_lon, lat = o_lat, radius = c_40_radio_m, color = "orange", weight = 1, fillOpacity = 0) %>%
+  addCircles(lng = d_lon, lat = d_lat, radius = c_40_radio_m, color = "orange", weight = 1, fillOpacity = 0) %>%
+  addCircles(lng = d_lon, lat = d_lat, radius = c_100_radio_m, color = "purple", weight = 1, fillOpacity = 0)
+
+
+# Adicionando a legenda
+map %>%
+  addLegend(pal = colorFactor(palette = "Set1", domain = trajectories$id), 
+            values = trajectories$id, 
+            title = "ID da Trajetória", 
+            opacity = 1)
+```
+
+### Altitude curves
+
+```{r}
+flt_ids <- unique(df$id_icao)
+
+plot_altitude_graph <- function(id){
+  p <- ggplot(df %>% filter(id_icao == id), aes(x = time, y = alt)) +
+    geom_line() +
+    labs(title = id, x = "Hora", y = "Altitude (alt)") +
+    theme_minimal()
+  
+  return(p)
+}
+
+# Criando os gráficos
+plots <- lapply(flt_ids, plot_altitude_graph)
+
+# Ajustando a proporção dos gráficos horizontalmente
+grid.arrange(grobs = plots, heights = c(10,10), widths=c(10,10))
+```
+
+
+
+
+## KPI05
+
+### Trajetória
+```{r}
+# GLO1137 | GLO1107 | GLO1127
+t1 <- trajectories %>% filter(id=="GLO1127")
+t1 <- t1$geometry
+```
+
+### Interseção
+```{r}
+get_intersection_point <- function(t, cilinder, lat, lon, event){
+  # Ponto central como objeto sf
+  ponto_central <- st_point(c(lon, lat)) |> 
+    st_sfc(crs = 4326)
+  
+  # Raio em NM e conversão para graus (~1 NM ≈ 1/60 graus)
+  raio_nm <- cilinder
+  raio_metros <- set_units(raio_nm, "nautical_mile") |> set_units("meters")
+  
+  
+# Criar o círculo como um buffer
+  buffer_cilindro <- ponto_central |> 
+    st_transform(crs = 3857) |> # Projeta para metros
+    st_buffer(dist = as.numeric(raio_metros)) |> 
+    st_transform(crs = 4326) # Volta para WGS84
+  
+  # Calcule a interseção entre a linha e o buffer
+  intersecao <- st_intersection(buffer_cilindro, t)
+  
+  df_coords_intersecao <- st_coordinates(intersecao)
+  
+  df_coords_intersecao <- as.data.frame(df_coords_intersecao) %>%
+    select(X,Y) %>%
+    rename(LON=X, LAT=Y)
+  
+  if(event=="d"){
+    return(df_coords_intersecao[length(df_coords_intersecao$LON),])
+  }else if(event=="a"){
+    return(df_coords_intersecao[1,])
+  }else{
+    message("Evento Inválido")
+  }
+}
+```
+
+
+```{r}
+# origem SBCT
+o_lat <- -25.53166667
+o_lon <- -49.17611111
+
+o_intersection <- get_intersection_point(t1, 40, o_lat, o_lon, "d")
+
+# destino SBSP
+d_lat <- -23.62611111
+d_lon <- -46.65638889
+
+d_intersection_40 <- get_intersection_point(t1, 40, d_lat, d_lon, "a")
+d_intersection_100 <- get_intersection_point(t1, 100, d_lat, d_lon, "a")
+```
+
+
+```{r}
+#####################################################################################
+########################### ORIGEM ##################################################
+#####################################################################################
+
+# Ponto central como objeto sf
+ponto_central <- st_point(c(o_lon, o_lat)) |> 
+  st_sfc(crs = 4326)
+
+# Raio em NM e conversão para graus (~1 NM ≈ 1/60 graus)
+raio_nm <- 40
+raio_metros <- set_units(raio_nm, "nautical_mile") |> set_units("meters")
+
+# Criar o círculo como um buffer
+buffer_cilindro_origem <- ponto_central |> 
+  st_transform(crs = 3857) |> # Projeta para metros
+  st_buffer(dist = as.numeric(raio_metros)) |> 
+  st_transform(crs = 4326) # Volta para WGS84
+
+#####################################################################################
+########################### DESTINO #################################################
+#####################################################################################
+# Ponto central como objeto sf
+ponto_central <- st_point(c(d_lon, d_lat)) |> 
+  st_sfc(crs = 4326)
+
+# Raio em NM e conversão para graus (~1 NM ≈ 1/60 graus)
+raio_nm <- 40
+raio_metros <- set_units(raio_nm, "nautical_mile") |> set_units("meters")
+
+buffer_cilindro_destino_c40 <- ponto_central |> 
+  st_transform(crs = 3857) |> # Projeta para metros
+  st_buffer(dist = as.numeric(raio_metros)) |> 
+  st_transform(crs = 4326) # Volta para WGS84
+
+# Raio em NM e conversão para graus (~1 NM ≈ 1/60 graus)
+raio_nm <- 100
+raio_metros <- set_units(raio_nm, "nautical_mile") |> set_units("meters")
+
+buffer_cilindro_destino_c100 <- ponto_central |> 
+  st_transform(crs = 3857) |> # Projeta para metros
+  st_buffer(dist = as.numeric(raio_metros)) |> 
+  st_transform(crs = 4326) # Volta para WGS84
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(data = t1, fill = "blue", alpha = 1) + # trajetoria
+  geom_point(data=o_intersection, 
+             aes(x=LON, y=LAT), 
+             size=2, 
+             color="red") + # trajetoria ^ O_C40 
+  geom_point(data=d_intersection_40, 
+             aes(x=LON, y=LAT), 
+             size=2, 
+             color="red") + # trajetoria ^ D_C40
+  geom_point(data=d_intersection_100, 
+             aes(x=LON, y=LAT), 
+             size=2, 
+             color="red") + # trajetoria ^ D_C100
+  
+  geom_sf(data = buffer_cilindro_origem, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c40, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c100, fill = "blue", alpha = 0)
+  
+
+  
+
+```
+
+### Cálculo do KPI05
+
+```{r}
+distancia_alcancada <- function(o_lat, o_lon, d_lat, d_lon, n_lat, n_lon, x_lat, x_lon) {
+  # Cria objetos POINT para as coordenadas fornecidas
+  ponto_o <- st_point(c(o_lon, o_lat))
+  ponto_d <- st_point(c(d_lon, d_lat))
+  ponto_n <- st_point(c(n_lon, n_lat))
+  ponto_x <- st_point(c(x_lon, x_lat))
+  
+  # Define um sistema de referência espacial (WGS84, EPSG:4326)
+  sf_o <- st_sfc(ponto_o, crs = 4326)
+  sf_d <- st_sfc(ponto_d, crs = 4326)
+  sf_n <- st_sfc(ponto_n, crs = 4326)
+  sf_x <- st_sfc(ponto_x, crs = 4326)
+  
+  # Calcula as distâncias geodésicas entre os pontos
+  ox <- as.numeric(st_distance(sf_o, sf_x)) # ox em metros
+  on <- as.numeric(st_distance(sf_o, sf_n)) # on em metros
+  dn <- as.numeric(st_distance(sf_d, sf_n)) # dn em metros
+  dx <- as.numeric(st_distance(sf_d, sf_x)) # dx em metros
+  
+  # Calcula a expressão especificada
+  resultado <- ((ox - on) + (dn - dx)) / 2
+  
+  return(resultado) # Resultado em metros
+}
+```
+
+
+```{r}
+distancia_voada <- function(t, n_lat, n_lon, x_lat, x_lon) {
+  # Transformar os pontos limites em objetos espaciais
+  ponto_inicio <- st_sfc(st_point(c(n_lon, n_lat)), crs = 4326)
+  ponto_fim <- st_sfc(st_point(c(x_lon, x_lat)), crs = 4326)
+  
+  # Localizar o índice mais próximo de cada ponto na trajetória
+  coords <- st_coordinates(t)
+  
+  indice_inicio <- which.min((coords[, 1] - n_lon)^2 + (coords[, 2] - n_lat)^2)
+  indice_fim <- which.min((coords[, 1] - x_lon)^2 + (coords[, 2] - x_lat)^2)
+  
+  # Extrair o segmento da LineString
+  segmento_coords <- coords[indice_inicio:indice_fim, , drop = FALSE]
+  segmento <- st_sfc(st_linestring(segmento_coords), crs = 4326)
+  
+  
+  return(segmento)
+
+}
+```
+
+#### Variante 1
+
+```{r}
+segmento_voado <- distancia_voada(t1, o_intersection$LAT, o_intersection$LON, d_intersection_40$LAT, d_intersection_40$LON)
+
+da <- distancia_alcancada(o_lat, o_lon, d_lat, d_lon, o_intersection$LAT, o_intersection$LON, d_intersection_40$LAT, d_intersection_40$LON)
+dv <- as.numeric(st_length(segmento_voado))
+
+ggplot() +
+  geom_sf(data = segmento_voado, fill = "blue", alpha = 1) +
+  geom_sf(data = buffer_cilindro_origem, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c40, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c100, fill = "blue", alpha = 0)
+
+```
+
+
+
+```{r}
+kpi05_v1 <- (dv-da)/da
+kpi05_v1
+```
+
+#### Variante 2
+```{r}
+segmento_voado <- distancia_voada(t1, o_intersection$LAT, o_intersection$LON, d_intersection_100$LAT, d_intersection_100$LON)
+
+da <- distancia_alcancada(o_lat, o_lon, d_lat, d_lon, o_intersection$LAT, o_intersection$LON, d_intersection_100$LAT, d_intersection_100$LON)
+dv <- as.numeric(st_length(segmento_voado))
+
+ggplot() +
+  geom_sf(data = segmento_voado, fill = "blue", alpha = 1) +
+  geom_sf(data = buffer_cilindro_origem, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c40, fill = "blue", alpha = 0) +
+  geom_sf(data = buffer_cilindro_destino_c100, fill = "blue", alpha = 0)
+
+```
+
+```{r}
+kpi05_v1 <- (dv-da)/da
+kpi05_v1
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
